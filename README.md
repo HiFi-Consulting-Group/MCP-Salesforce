@@ -39,12 +39,16 @@ export SALESFORCE_MCP_CLIENT_SECRET=your_consumer_secret
 uv run scripts/get_token.py
 ```
 
-The script opens your browser, completes the OAuth flow, and prints the values
-to add to your `.env` file or MCP server config.
+The script opens your browser, completes the OAuth flow, and prints all four
+values — including `SALESFORCE_REFRESH_TOKEN` — ready to paste into your MCP
+server config in the next step. You never need to obtain or handle the refresh
+token manually.
 
 ### Step 3: Configure the MCP server
 
-In your `claude_desktop_config.json` (or equivalent):
+In your `claude_desktop_config.json` (or equivalent), paste the values printed
+by the script. Claude Desktop launches the MCP server as a separate process, so
+all credentials must be set here — they won't be inherited from your terminal.
 
 ```json
 {
@@ -60,14 +64,17 @@ In your `claude_desktop_config.json` (or equivalent):
                 "SALESFORCE_INSTANCE_URL": "https://yourorg.my.salesforce.com",
                 "SALESFORCE_MCP_CLIENT_ID": "your_consumer_key",
                 "SALESFORCE_MCP_CLIENT_SECRET": "your_consumer_secret",
-                "SALESFORCE_REFRESH_TOKEN": "your_refresh_token"
+                "SALESFORCE_REFRESH_TOKEN": "your_refresh_token",
+                "SALESFORCE_DOMAIN": "test"
             }
         }
     }
 }
 ```
 
-The refresh token is long-lived (until revoked).  You only need to re-run the
+Omit `SALESFORCE_DOMAIN` entirely if connecting to a production org.
+
+The refresh token is long-lived (until revoked). You only need to re-run the
 script if a user changes their password or an admin revokes OAuth tokens.
 
 ## Environment Variable Reference
