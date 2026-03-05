@@ -7,10 +7,10 @@
 # ///
 import asyncio
 import json
+import urllib.parse
+import urllib.request
 from typing import Any, Optional
 import os
-import shutil
-import subprocess
 from dotenv import load_dotenv
 
 from simple_salesforce import Salesforce
@@ -30,93 +30,84 @@ class SalesforceClient:
         self.sobjects_cache: dict[str, Any] = {}
 
     def connect(self) -> bool:
-        """Establishes connection to Salesforce using environment variables.
-        
+        """Establishes connection to Salesforce via OAuth refresh token flow.
+
+        Requires SALESFORCE_MCP_CLIENT_ID, SALESFORCE_MCP_CLIENT_SECRET, and
+        SALESFORCE_REFRESH_TOKEN to be set in the environment.  Run
+        scripts/get_token.py once to obtain these values.
+
         Returns:
             bool: True if connection successful, False otherwise
         """
         try:
-            access_token = os.getenv('SALESFORCE_ACCESS_TOKEN')
-            instance_url = os.getenv('SALESFORCE_INSTANCE_URL')
-            domain = os.getenv('SALESFORCE_DOMAIN')
-            if access_token and instance_url:
+            refresh_auth = self._get_refresh_token_auth()
+            if refresh_auth:
                 self.sf = Salesforce(
-                    instance_url=instance_url,
-                    session_id=access_token,
-                    domain=domain
+                    instance_url=refresh_auth['instance_url'],
+                    session_id=refresh_auth['access_token'],
                 )
                 return True
 
-            cli_auth = self._get_cli_auth()
-            if cli_auth:
-                self.sf = Salesforce(
-                    instance_url=cli_auth['instance_url'],
-                    session_id=cli_auth['access_token'],
-                )
-                return True
-            
-            self.sf = Salesforce(
-                username=os.getenv('SALESFORCE_USERNAME'),
-                password=os.getenv('SALESFORCE_PASSWORD'),
-                security_token=os.getenv('SALESFORCE_SECURITY_TOKEN'),
-                domain=domain
+            print(
+                "Salesforce connection failed: OAuth refresh token credentials not found. "
+                "Set SALESFORCE_MCP_CLIENT_ID, SALESFORCE_MCP_CLIENT_SECRET, and "
+                "SALESFORCE_REFRESH_TOKEN, then restart. "
+                "Run scripts/get_token.py to obtain these values."
             )
-            return True
+            return False
         except Exception as e:
             print(f"Salesforce connection failed: {str(e)}")
             return False
 
-    def _get_cli_auth(self) -> Optional[dict[str, str]]:
-        """Retrieves Salesforce authentication from the Salesforce CLI.
+    def _get_refresh_token_auth(self) -> Optional[dict[str, str]]:
+        """Exchange a stored refresh token for a fresh access token.
 
-        This method attempts to use either the `sf` or `sfdx` CLI to obtain
-        the access token and instance URL for a Salesforce org. If the
-        `SALESFORCE_CLI_TARGET_ORG` environment variable is set, its value
-        is used to select the target org; otherwise, the CLI default org is
-        used.
+        Reads SALESFORCE_MCP_CLIENT_ID, SALESFORCE_MCP_CLIENT_SECRET, and
+        SALESFORCE_REFRESH_TOKEN from the environment.  Uses
+        SALESFORCE_INSTANCE_URL when available (preferred), otherwise falls
+        back to the login/test host derived from SALESFORCE_DOMAIN.
 
         Returns:
-            Optional[dict[str, str]]: A dictionary containing `access_token`
-            and `instance_url` keys if authentication details can be
-            retrieved, otherwise `None`.
+            Optional[dict[str, str]]: Dict with 'access_token' and
+            'instance_url' on success, otherwise None.
         """
-        target_org = os.getenv("SALESFORCE_CLI_TARGET_ORG")
-        sf_cmd = shutil.which("sf")
-        sfdx_cmd = shutil.which("sfdx")
+        client_id = os.getenv('SALESFORCE_MCP_CLIENT_ID')
+        client_secret = os.getenv('SALESFORCE_MCP_CLIENT_SECRET')
+        refresh_token = os.getenv('SALESFORCE_REFRESH_TOKEN')
 
-        if sf_cmd:
-            cmd = [sf_cmd, "org", "display", "--json"]
-            if target_org:
-                cmd.extend(["--target-org", target_org])
-        elif sfdx_cmd:
-            cmd = [sfdx_cmd, "force:org:display", "--json"]
-            if target_org:
-                cmd.extend(["--targetusername", target_org])
-        else:
+        if not (client_id and client_secret and refresh_token):
             return None
 
+        instance_url = os.getenv('SALESFORCE_INSTANCE_URL')
+        domain = os.getenv('SALESFORCE_DOMAIN', '')
+        if instance_url:
+            token_url = f"{instance_url.rstrip('/')}/services/oauth2/token"
+        elif domain == 'test':
+            token_url = "https://test.salesforce.com/services/oauth2/token"
+        else:
+            token_url = "https://login.salesforce.com/services/oauth2/token"
+
         try:
-            result = subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=30,
-            )
-            payload = json.loads(result.stdout)
-            auth = payload.get("result", {})
-            access_token = auth.get("accessToken")
-            instance_url = auth.get("instanceUrl")
-            if access_token and instance_url:
-                return {"access_token": access_token, "instance_url": instance_url}
-        except subprocess.TimeoutExpired as e:
-            print(f"Salesforce CLI auth lookup timed out: {str(e)}")
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-            print(f"Salesforce CLI auth lookup failed: {str(e)}")
+            body = urllib.parse.urlencode({
+                'grant_type': 'refresh_token',
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'refresh_token': refresh_token,
+            }).encode()
+            req = urllib.request.Request(token_url, data=body, method='POST')
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+
+            access_token = data.get('access_token')
+            new_instance_url = data.get('instance_url')
+            if access_token and new_instance_url:
+                return {'access_token': access_token, 'instance_url': new_instance_url}
+            print(f"Refresh token exchange returned unexpected response: {data}")
+        except Exception as e:
+            print(f"Refresh token auth failed: {str(e)}")
 
         return None
-    
+
     def get_object_fields(self, object_name: str) -> str:
         """Retrieves field Names, labels and typesfor a specific Salesforce object.
 

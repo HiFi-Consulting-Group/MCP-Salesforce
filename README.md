@@ -13,15 +13,43 @@ A Model Context Protocol (MCP) server implementation for Salesforce integration,
 - Make direct REST API calls to Salesforce
 
 
-## Configuration
-### Model Context Protocol
+## Authentication
 
-To use this server with the Model Context Protocol, you need to configure it in your `claude_desktop_config.json` file. Add the following entry to the `mcpServers` section:
+This server uses the **OAuth Authorization Code + Refresh Token** flow exclusively.
+Users authenticate once via browser; the server auto-refreshes the access token on
+every startup.  No passwords are ever stored.
 
+### Step 1: Create a Salesforce External Client App
 
-    {
-        "mcpServers": {
-            "salesforce": {
+Salesforce has replaced Connected Apps with **External Client Apps**. In Salesforce Setup, search for **External Client Apps** and create a new one:
+
+- Under **OAuth Settings**, enable **OAuth Authorization Code and Credentials Flow**
+- Callback URL: `http://localhost:8788/callback`
+- Scopes: `api`, `refresh_token`, `offline_access`
+- Save and note the **Client ID** (Consumer Key) and **Client Secret** (Consumer Secret)
+
+### Step 2: Run the one-time auth script
+
+```bash
+export SALESFORCE_MCP_CLIENT_ID=your_consumer_key
+export SALESFORCE_MCP_CLIENT_SECRET=your_consumer_secret
+# For a sandbox org, also set:
+# export SALESFORCE_DOMAIN=test
+
+uv run scripts/get_token.py
+```
+
+The script opens your browser, completes the OAuth flow, and prints the values
+to add to your `.env` file or MCP server config.
+
+### Step 3: Configure the MCP server
+
+In your `claude_desktop_config.json` (or equivalent):
+
+```json
+{
+    "mcpServers": {
+        "salesforce": {
             "command": "uvx",
             "args": [
                 "--from",
@@ -29,25 +57,25 @@ To use this server with the Model Context Protocol, you need to configure it in 
                 "salesforce"
             ],
             "env": {
-                "SALESFORCE_ACCESS_TOKEN": "SALESFORCE_ACCESS_TOKEN",
-                "SALESFORCE_INSTANCE_URL": "SALESFORCE_INSTANCE_URL",
-                "SALESFORCE_DOMAIN": "SALESFORCE_DOMAIN"
-                }
+                "SALESFORCE_INSTANCE_URL": "https://yourorg.my.salesforce.com",
+                "SALESFORCE_MCP_CLIENT_ID": "your_consumer_key",
+                "SALESFORCE_MCP_CLIENT_SECRET": "your_consumer_secret",
+                "SALESFORCE_REFRESH_TOKEN": "your_refresh_token"
             }
         }
     }
-    
+}
+```
 
+The refresh token is long-lived (until revoked).  You only need to re-run the
+script if a user changes their password or an admin revokes OAuth tokens.
 
-**Note on Salesforce Authentication Methods**
+## Environment Variable Reference
 
-This server supports three authentication methods:
-
-- **OAuth (Recommended):** Set `SALESFORCE_ACCESS_TOKEN` and `SALESFORCE_INSTANCE_URL` as environment variables. 
-- **Salesforce CLI (Default Org):** If no OAuth env vars are set, the server will try to use the active Salesforce CLI default org from the current workspace (via `sf org display --json` or `sfdx force:org:display --json`). Optionally set `SALESFORCE_CLI_TARGET_ORG` to target a specific org.
-- **Username/Password (Legacy):** If `SALESFORCE_ACCESS_TOKEN` and `SALESFORCE_INSTANCE_URL` are not set, the server will fall back to using `SALESFORCE_USERNAME`, `SALESFORCE_PASSWORD`, and `SALESFORCE_SECURITY_TOKEN`. 
-
-**Environment Configuration**
-
-- **`SALESFORCE_DOMAIN` (Optional):** Set to `test` to connect to a Salesforce sandbox environment. If not set or left empty, the server will connect to the production environment.
-- **`SALESFORCE_CLI_TARGET_ORG` (Optional):** When using the Salesforce CLI authentication method, set this to target a specific org alias or username instead of the default org.
+| Variable | Description |
+|---|---|
+| `SALESFORCE_MCP_CLIENT_ID` | External Client App Client ID (Consumer Key) |
+| `SALESFORCE_MCP_CLIENT_SECRET` | External Client App Client Secret (Consumer Secret) |
+| `SALESFORCE_REFRESH_TOKEN` | Long-lived refresh token (from `scripts/get_token.py`) |
+| `SALESFORCE_INSTANCE_URL` | Your org's My Domain URL (e.g. `https://yourorg.my.salesforce.com`) |
+| `SALESFORCE_DOMAIN` | Set to `test` for a sandbox org; omit for production |
